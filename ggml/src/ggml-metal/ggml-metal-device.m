@@ -276,15 +276,7 @@ static NSString * ggml_metal_library_flatten_source(NSString * path_source, NSEr
     return src;
 }
 
-// Compile all per-kind libraries in parallel. `source_for_kind` returns the MSL
-// source for a kind (the helper takes ownership and releases it), or nil with
-// the tensor API headers (<metal_tensor>, MetalPerformancePrimitives) are only
-// exposed to the shader compiler at Metal language version 4.0. When the
-// language version is left unset, the runtime picks a default from the SDK the
-// binary was linked against, so a binary built with a pre-26 SDK fails the
-// tensor API probe at runtime on M5/A19 devices (error compiling source) even
-// though the OS supports it. Request 4.0 explicitly whenever the device has
-// the tensor API (Metal4 family, which implies an OS that accepts 4.0).
+// tensor API headers need Metal 4.0, and an unset language version follows the build SDK
 static void ggml_metal_compile_options_set_lang(MTLCompileOptions * options, bool has_tensor) {
     if (!has_tensor) {
         return;
@@ -293,6 +285,8 @@ static void ggml_metal_compile_options_set_lang(MTLCompileOptions * options, boo
     options.languageVersion = (MTLLanguageVersion) MTLLanguageVersion4_0_GGML;
 }
 
+// Compile all per-kind libraries in parallel. `source_for_kind` returns the MSL
+// source for a kind (the helper takes ownership and releases it), or nil with
 // *err set on failure. On success the objs[] slots are populated and the routing
 // index is built; on any failure every error is logged and false is returned
 // (the caller is responsible for freeing `res`).
@@ -1079,6 +1073,14 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
             if (getenv("GGML_METAL_TENSOR_DISABLE") != NULL) {
                 dev->props.has_tensor = false;
             }
+
+#if !GGML_METAL_EMBED_LIBRARY
+            // default.metallib has no tensor kernels, so tensor dispatch would use the wrong tile sizes
+            if (dev->props.has_tensor) {
+                GGML_LOG_INFO("%s: tensor API disabled - precompiled metal library has no tensor kernels\n", __func__);
+                dev->props.has_tensor = false;
+            }
+#endif
 
             // note: disable the tensor API by default for old chips because with the current implementation it is not useful
             // - M2 Ultra:   ~5% slower
