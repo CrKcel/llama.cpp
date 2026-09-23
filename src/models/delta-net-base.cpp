@@ -465,6 +465,13 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
 
     const int64_t n_seqs = ubatch.n_seqs;
 
+    if (mctx_cur->is_recording()) {
+        auto * record = mctx_cur->get_replay(il, llama_memory_recurrent::REPLAY_CONV);
+        GGML_ASSERT(ggml_nelements(qkv_mixed) <= ggml_nelements(record));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, qkv_mixed,
+                    ggml_view_1d(ctx0, record, ggml_nelements(qkv_mixed), 0)));
+    }
+
     ggml_tensor * conv_states = build_rs(inp, conv_states_all, hparams.n_embd_r(), n_seqs);
     cb(conv_states, "conv_states", il);
 
@@ -481,7 +488,11 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
 
     const size_t row_size  = ggml_row_size(conv_states_all->type, row_count);
 
-    if (cparams.n_rs_seq == 0) {
+    if (mctx_cur->is_recording()) {
+        return conv_input;
+    }
+
+    if (cparams.n_rs_seq == 0 || mctx_cur->has_replay()) {
         const int64_t s_idx  = conv_input->ne[0] - conv_states->ne[0];
         const int64_t s_slot = 0;
 
@@ -551,7 +562,7 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     const int64_t n_seqs       = v->ne[3];
     const int64_t n_seq_tokens = q->ne[2];
 
-    const bool keep = cparams.n_rs_seq > 0;
+    const bool keep = cparams.n_rs_seq > 0 || mctx_cur->has_replay();
 
     GGML_ASSERT(state_rows == nullptr || keep); // rows mode is a ring-path optimization
 
@@ -571,7 +582,17 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     }
 
     const int64_t D = S_v * S_v * H_v;
-    const int64_t K = cparams.n_rs_seq + 1;
+    const int64_t K = mctx_cur->has_replay() ? (mctx_cur->is_recording() ? 0 : 1) : cparams.n_rs_seq + 1;
+
+    if (mctx_cur->is_recording()) {
+        ggml_tensor * inputs[] = {k, v, g, b};
+        for (int j = 0; j < 4; ++j) {
+            auto * record = mctx_cur->get_replay(il, static_cast<llama_memory_recurrent::replay_kind>(j));
+            GGML_ASSERT(ggml_nelements(inputs[j]) <= ggml_nelements(record));
+            ggml_build_forward_expand(gf, ggml_cpy(ctx0, inputs[j],
+                        ggml_view_1d(ctx0, record, ggml_nelements(inputs[j]), 0)));
+        }
+    }
 
     const bool raw = gdn_raw_beta && gdn_raw_alpha && gdn_raw_dt_bias && gdn_raw_a;
     ggml_tensor * gg = raw ? gdn_raw_alpha : g;
@@ -589,9 +610,9 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     if (raw) {
         ggml_gated_delta_net_set_raw_gates(gdn_out, gdn_raw_dt_bias, gdn_raw_a);
     }
-    if (n_seq_tokens > 1) {
+    if (K > 0 && n_seq_tokens > 1) {
         res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_out, il});
-    } else {
+    } else if (K > 0) {
         res->add_fused_node({LLM_FUSED_OP_GDN_AR, gdn_out, il});
     }
 
@@ -605,6 +626,8 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
         ggml_row_size(gdn_out->type, S_v * H_v * n_seq_tokens),
         0);
     cb(output, "attn_output", il);
+
+    if (K == 0) return output;
 
     const size_t row_size = hparams.n_embd_s() * ggml_element_size(ssm_states_all);
 

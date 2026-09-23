@@ -15,6 +15,8 @@ struct llama_kv_cell_ext {
     llama_pos x = 0;
     llama_pos y = 0;
 
+    llama_pos logical_pos = -1;
+
     // return true if the current 2D spatial position is greater than other
     bool is_2d_gt(llama_pos ox, llama_pos oy) const {
         return (y > oy) || (y == oy && x > ox);

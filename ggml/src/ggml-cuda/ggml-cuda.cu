@@ -2378,6 +2378,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             ggml_cuda_op_gated_linear_attn(ctx, dst);
             break;
         case GGML_OP_GATED_DELTA_NET:
+        case GGML_OP_GATED_DELTA_NET_RECORD:
             ggml_cuda_op_gated_delta_net(ctx, dst);
             break;
         case GGML_OP_DSV4_HC_COMB:
@@ -5572,6 +5573,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_RWKV_WKV7:
             return true;
         case GGML_OP_GATED_DELTA_NET:
+        case GGML_OP_GATED_DELTA_NET_RECORD:
             // rows-indexed state read (src[6]) not implemented on CUDA yet;
             // reject so it falls back instead of silently reading src[5] as a scratch
             if (op->src[6] != NULL) {
